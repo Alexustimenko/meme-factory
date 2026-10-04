@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Meme Radar — поиск залетающих однофоточных TikTok-мемов и генерация новых идей." />
+  <title>Meme Radar</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">ZERO-COST CLOUD VERSION</div>
+      <h1>🔥 Meme Radar</h1>
+      <p>Однофоточные TikTok-мемы за последние 24 часа → новая идея → готовая картинка → TikTok.</p>
+    </div>
+    <div class="status-panel">
+      <span id="cloudStatus" class="status ok">● Cloud</span>
+      <span id="tiktokStatus" class="status">● TikTok: проверка…</span>
+      <a id="tiktokConnect" class="button secondary small" href="/auth/tiktok/start">Подключить TikTok</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="toolbar card">
+      <div>
+        <strong>Тренды за 24 часа</strong>
+        <div id="scanMeta" class="muted">Загрузка…</div>
+      </div>
+      <button id="refreshBtn" class="button secondary">Обновить список</button>
+    </section>
+
+    <section class="layout">
+      <div>
+        <div id="emptyState" class="card empty hidden"></div>
+        <div id="trendsGrid" class="trends-grid"></div>
+      </div>
+
+      <aside class="studio card">
+        <div id="studioEmpty" class="studio-empty">
+          <div class="big-icon">👈</div>
+          <h2>Выбери залетевший мем</h2>
+          <p>Здесь появятся генератор, изображение и публикация.</p>
+        </div>
+
+        <div id="studioContent" class="hidden">
+          <div class="source-box">
+            <div>
+              <div class="eyebrow">ВЫБРАННЫЙ ТРЕНД</div>
+              <h2 id="sourceCaption">—</h2>
+              <div id="sourceMetrics" class="metrics compact"></div>
+            </div>
+            <a id="sourceLink" class="button ghost small" target="_blank" rel="noopener">Открыть TikTok ↗</a>
+          </div>
+
+          <button id="generateBtn" class="button full">✨ Сгенерировать 3 идеи</button>
+          <div id="aiMessage" class="muted"></div>
+          <div id="variants" class="variants"></div>
+
+          <div id="editor" class="hidden editor">
+            <div class="canvas-wrap">
+              <canvas id="memeCanvas" width="1080" height="1350"></canvas>
+              <div id="canvasPlaceholder" class="canvas-placeholder">Выбери вариант и нажми «Создать картинку»</div>
+            </div>
+
+            <div class="row gap">
+              <button id="imageBtn" class="button secondary">🖼 Создать картинку</button>
+              <button id="downloadBtn" class="button ghost" disabled>⬇ Скачать PNG</button>
+            </div>
+
+            <label>Текст на картинке
+              <textarea id="memeText" rows="4"></textarea>
+            </label>
+
+            <label>Подпись
+              <textarea id="captionInput" rows="3"></textarea>
+            </label>
+
+            <label>Хэштеги
+              <input id="hashtagsInput" type="text" placeholder="#мем #жиза #fyp" />
+            </label>
+
+            <label class="confirm">
+              <input id="confirmUpload" type="checkbox" />
+              <span>Я посмотрел готовый мем, подпись и теги и подтверждаю отправку в TikTok.</span>
+            </label>
+
+            <button id="publishBtn" class="button full" disabled>🚀 Отправить в TikTok</button>
+            <div id="publishMessage" class="notice muted"></div>
+            <button id="statusBtn" class="button ghost full hidden">Проверить статус отправки</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <footer>
+    <span>Meme Radar · Cloudflare Workers + Workers AI + KV + GitHub Actions</span>
+    <nav><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a></nav>
+  </footer>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "tiktok-meme-radar-free",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-cost TikTok one-photo meme radar: Cloudflare Workers + Workers AI + KV + GitHub Actions.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "scan": "node scripts/scan-tiktok.mjs",
+    "install-browser": "playwright install chromium",
+    "check": "node --check src/index.js && node --check public/app.js && node --check scripts/scan-tiktok.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0",
+    "wrangler": "^4.45.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
