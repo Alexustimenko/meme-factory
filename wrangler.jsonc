@@ -1,28 +1,28 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "tiktok-meme-radar-free",
-  "main": "src/index.js",
-  "compatibility_date": "2026-10-04",
-  "workers_dev": true,
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
-  },
-  "ai": {
-    "binding": "AI"
-  },
-  "kv_namespaces": [
-    {
-      "binding": "APP_KV",
-      "id": "PUT_YOUR_KV_NAMESPACE_ID_HERE"
-    }
-  ],
-  "vars": {
-    "TEXT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
-    "IMAGE_MODEL": "@cf/black-forest-labs/flux-1-schnell",
-    "TIKTOK_SCOPES": "user.info.basic,video.upload",
-    "TIKTOK_VERIFY_FILENAME": "",
-    "TIKTOK_VERIFY_CONTENT": ""
-  }
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "tiktok-meme-radar-free",
+	"main": "src/index.js",
+	"compatibility_date": "2026-10-04",
+	"workers_dev": true,
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application"
+	},
+	"ai": {
+		"binding": "AI"
+	},
+	"kv_namespaces": [
+		{
+			"binding": "APP_KV",
+			"id": "ac7dc6c5cf1a4792b1b9ad0edde1562b"
+		}
+	],
+	"vars": {
+		"TEXT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+		"IMAGE_MODEL": "@cf/black-forest-labs/flux-1-schnell",
+		"TIKTOK_SCOPES": "user.info.basic,video.upload",
+		"TIKTOK_VERIFY_FILENAME": "",
+		"TIKTOK_VERIFY_CONTENT": ""
+	}
 }

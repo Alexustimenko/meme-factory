@@ -2,6 +2,7 @@ name: Scan TikTok trends
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "17 */6 * * *"
 
@@ -11,7 +12,8 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,7 +35,20 @@ jobs:
         env:
           INGEST_URL: ${{ secrets.INGEST_URL }}
           INGEST_KEY: ${{ secrets.INGEST_KEY }}
+
           SCAN_HOURS: "24"
-          MAX_POSTS: "45"
-          MAX_LINKS_PER_QUERY: "15"
+
+          MAX_POSTS: "60"
+
+          MAX_LINKS_PER_QUERY: "20"
+
           SCAN_QUERIES: ${{ vars.SCAN_QUERIES }}
+
+      - name: Upload zero-result diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-scan-diagnostics
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 3
