@@ -1,358 +1,490 @@
-import { chromium } from 'playwright';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { chromium } from "playwright";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const defaults = JSON.parse(
   await fs.readFile(
-    path.join(__dirname, '..', 'data', 'seed-queries.json'),
-    'utf8'
+    path.join(__dirname, "..", "data", "seed-queries.json"),
+    "utf8"
   )
 );
 
-const hours = clamp(Number(process.env.SCAN_HOURS || 24), 1, 72);
-const maxPosts = clamp(Number(process.env.MAX_POSTS || 45), 5, 100);
+const hours = clamp(
+  Number(process.env.SCAN_HOURS || 24),
+  1,
+  72
+);
+
+const maxPosts = clamp(
+  Number(process.env.MAX_POSTS || 60),
+  5,
+  100
+);
+
 const maxLinksPerQuery = clamp(
-  Number(process.env.MAX_LINKS_PER_QUERY || 15),
+  Number(process.env.MAX_LINKS_PER_QUERY || 20),
   3,
   40
 );
 
-const ingestUrl = process.env.INGEST_URL || '';
-const ingestKey = process.env.INGEST_KEY || '';
+const ingestUrl =
+  process.env.INGEST_URL || "";
 
-const extra = String(process.env.SCAN_QUERIES || '')
-  .split(',')
+const ingestKey =
+  process.env.INGEST_KEY || "";
+
+const extra = String(
+  process.env.SCAN_QUERIES || ""
+)
+  .split(",")
   .map((x) => x.trim())
   .filter(Boolean);
 
 if (!ingestUrl || !ingestKey) {
-  throw new Error('Нужны GitHub secrets INGEST_URL и INGEST_KEY');
+  throw new Error(
+    "Нужны GitHub secrets INGEST_URL и INGEST_KEY"
+  );
 }
-
-console.log(`Scanning TikTok: ${hours}h, maxPosts=${maxPosts}`);
-
-const browser = await chromium.launch({
-  headless: true,
-});
-
-const context = await browser.newContext({
-  locale: 'en-US',
-  timezoneId: 'Europe/Berlin',
-  viewport: {
-    width: 1440,
-    height: 1000,
-  },
-  userAgent:
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/154.0.0.0 Safari/537.36',
-});
-
-await context.route('**/*', async (route) => {
-  const type = route.request().resourceType();
-
-  if (['media', 'font'].includes(type)) {
-    return route.abort();
-  }
-
-  return route.continue();
-});
-
-const discoveryPage = await context.newPage();
-
-const creativeTopics = await loadCreativeCenterTopics(discoveryPage);
 
 const queries = [
   ...new Set([
     ...extra,
-    ...creativeTopics,
     ...defaults,
+
+    // дополнительные запросы именно под мемы
+    "funny meme",
+    "relatable meme",
+    "work meme",
+    "relationship meme",
+    "student meme",
+    "school meme",
+    "programmer meme",
+    "life meme",
+    "мем",
+    "жиза",
+    "мем работа",
+    "мем отношения",
+    "мем универ",
   ]),
 ]
   .filter(Boolean)
   .slice(0, 30);
 
-console.log(`Queries (${queries.length}): ${queries.join(', ')}`);
+console.log(
+  `Scanning TikTok via Bing RSS: ${hours}h`
+);
+
+console.log(
+  `Queries (${queries.length}): ${queries.join(", ")}`
+);
+
+/*
+ * =========================================================
+ * 1. ИЩЕМ TIKTOK PHOTO URL ЧЕРЕЗ BING RSS
+ * =========================================================
+ */
 
 const foundLinks = new Map();
-const directItems = new Map();
 
-let blockedCount = 0;
-let pagesVisited = 0;
+let bingRequests = 0;
 
 for (const query of queries) {
-  if (foundLinks.size + directItems.size >= maxPosts * 4) {
+  if (
+    foundLinks.size >=
+    maxPosts * 4
+  ) {
     break;
   }
 
-  console.log(`Search: ${query}`);
+  console.log("");
+  console.log(
+    `Bing discovery: ${query}`
+  );
 
-  const cleanTag = query
-    .replace(/^#/, '')
-    .replace(/\s+/g, '');
+  const searchQueries = [
+    `site:tiktok.com "/photo/" "${query}"`,
 
-  const slug = query
-    .replace(/^#/, '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '');
+    `site:www.tiktok.com "${query}" "photo"`,
 
-  const urls = [
-    `https://www.tiktok.com/search?q=${encodeURIComponent(query)}`,
-    `https://www.tiktok.com/tag/${encodeURIComponent(cleanTag)}`,
-
-    ...(slug
-      ? [
-          `https://www.tiktok.com/channel/${encodeURIComponent(
-            slug
-          )}`,
-        ]
-      : []),
+    `site:tiktok.com inurl:photo "${query}"`,
   ];
 
-  for (const target of urls) {
+  const foundForQuery =
+    new Set();
+
+  for (const searchQuery of searchQueries) {
     try {
-      pagesVisited += 1;
+      bingRequests += 1;
 
-      const response = await discoveryPage.goto(target, {
-        waitUntil: 'domcontentloaded',
-        timeout: 35_000,
-      });
-
-      await discoveryPage.waitForTimeout(2500);
-
-      if (!response || response.status() >= 400) {
-        console.log(
-          `  HTTP ${response?.status() || 'no response'}: ${target}`
+      const links =
+        await searchBingRss(
+          searchQuery
         );
-
-        continue;
-      }
-
-      const bodyText = (
-        await discoveryPage
-          .locator('body')
-          .innerText()
-          .catch(() => '')
-      ).toLowerCase();
-
-      if (
-        /captcha|verify to continue|unusual traffic|too many attempts/.test(
-          bodyText
-        )
-      ) {
-        blockedCount += 1;
-
-        console.log(`  challenge signal: ${target}`);
-      }
-
-      for (let i = 0; i < 4; i++) {
-        await discoveryPage.mouse.wheel(0, 2200);
-        await discoveryPage.waitForTimeout(700);
-      }
-
-      const anchors = await discoveryPage
-        .locator('a[href*="/photo/"]')
-        .evaluateAll((els) =>
-          els
-            .map((a) => a.href)
-            .filter(Boolean)
-        )
-        .catch(() => []);
-
-      const scripts = await discoveryPage
-        .locator('script')
-        .allTextContents()
-        .catch(() => []);
-
-      const scriptLinks =
-        extractPhotoLinksFromScripts(scripts);
-
-      const scriptItems =
-        extractPhotoItemsFromScripts(scripts);
-
-      let added = 0;
-
-      for (
-        const link of [...anchors, ...scriptLinks].slice(
-          0,
-          maxLinksPerQuery * 3
-        )
-      ) {
-        const clean = canonicalTikTokUrl(link);
-
-        if (
-          clean &&
-          !foundLinks.has(clean)
-        ) {
-          foundLinks.set(clean, query);
-          added += 1;
-        }
-
-        if (added >= maxLinksPerQuery) {
-          break;
-        }
-      }
-
-      for (const item of scriptItems) {
-        const trend = normalizeItem(
-          item,
-          itemUrl(item),
-          query
-        );
-
-        if (!trend) {
-          continue;
-        }
-
-        if (
-          trend.ageHours < 0 ||
-          trend.ageHours > hours ||
-          trend.imageCount !== 1
-        ) {
-          continue;
-        }
-
-        const key =
-          trend.url || trend.id;
-
-        if (!directItems.has(key)) {
-          directItems.set(key, trend);
-        }
-
-        if (directItems.size >= maxPosts * 2) {
-          break;
-        }
-      }
 
       console.log(
-        `  found: anchors=${anchors.length}, ` +
-          `scriptLinks=${scriptLinks.length}, ` +
-          `scriptItems=${scriptItems.length}`
+        `  RSS results: ${links.length}`
       );
 
+      for (const link of links) {
+        const clean =
+          canonicalTikTokUrl(
+            link
+          );
+
+        if (!clean) {
+          continue;
+        }
+
+        foundForQuery.add(
+          clean
+        );
+
+        if (
+          !foundLinks.has(clean)
+        ) {
+          foundLinks.set(
+            clean,
+            query
+          );
+        }
+
+        if (
+          foundForQuery.size >=
+          maxLinksPerQuery
+        ) {
+          break;
+        }
+      }
+
       if (
-        anchors.length ||
-        scriptLinks.length ||
-        scriptItems.length
+        foundForQuery.size >=
+        maxLinksPerQuery
       ) {
         break;
       }
+
+      // не долбим Bing слишком быстро
+      await sleep(700);
     } catch (error) {
       console.log(
-        `  search error: ${error.message}`
+        `  Bing error: ${error.message}`
       );
     }
   }
+
+  console.log(
+    `  TikTok photo URLs for query: ${foundForQuery.size}`
+  );
+
+  console.log(
+    `  Total unique URLs: ${foundLinks.size}`
+  );
+
+  await sleep(500);
 }
 
+console.log("");
 console.log(
-  `Discovery: links=${foundLinks.size}, ` +
-    `directPhotoItems=${directItems.size}, ` +
-    `pages=${pagesVisited}, ` +
-    `blockedSignals=${blockedCount}`
+  "================================"
 );
 
-const trends = [
-  ...directItems.values(),
-];
+console.log(
+  `Bing requests: ${bingRequests}`
+);
 
-const postPage = await context.newPage();
+console.log(
+  `TikTok photo URLs discovered: ${foundLinks.size}`
+);
+
+console.log(
+  "================================"
+);
+
+/*
+ * =========================================================
+ * 2. ОТКРЫВАЕМ КОНКРЕТНЫЕ TIKTOK ПОСТЫ
+ * =========================================================
+ */
+
+const browser =
+  await chromium.launch({
+    headless: true,
+  });
+
+const context =
+  await browser.newContext({
+    locale: "en-US",
+
+    timezoneId:
+      "Europe/Berlin",
+
+    viewport: {
+      width: 1440,
+      height: 1000,
+    },
+
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+      "AppleWebKit/537.36 (KHTML, like Gecko) " +
+      "Chrome/154.0.0.0 Safari/537.36",
+  });
+
+/*
+ * Видео, аудио и шрифты нам для анализа не нужны.
+ * JS и HTML оставляем.
+ */
+await context.route(
+  "**/*",
+  async (route) => {
+    const type =
+      route.request().resourceType();
+
+    if (
+      [
+        "media",
+        "font",
+      ].includes(type)
+    ) {
+      return route.abort();
+    }
+
+    return route.continue();
+  }
+);
+
+const page =
+  await context.newPage();
+
+const trends = [];
 
 let inspected = 0;
+let blockedCount = 0;
+let noJsonCount = 0;
+let expiredCount = 0;
+let multiImageCount = 0;
+
+let lastVisitedUrl = "";
 
 for (const [url, query] of foundLinks) {
   if (
-    inspected >= maxPosts ||
-    trends.length >= maxPosts
+    inspected >= maxPosts
   ) {
     break;
-  }
-
-  if (
-    trends.some(
-      (x) => x.url === url
-    )
-  ) {
-    continue;
   }
 
   inspected += 1;
 
+  lastVisitedUrl = url;
+
+  console.log("");
+  console.log(
+    `[${inspected}/${Math.min(
+      foundLinks.size,
+      maxPosts
+    )}] ${url}`
+  );
+
   try {
-    const response = await postPage.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 35_000,
-    });
+    const response =
+      await page.goto(
+        url,
+        {
+          waitUntil:
+            "domcontentloaded",
+
+          timeout:
+            35_000,
+        }
+      );
+
+    if (!response) {
+      console.log(
+        "  no HTTP response"
+      );
+
+      continue;
+    }
+
+    console.log(
+      `  HTTP ${response.status()}`
+    );
 
     if (
-      !response ||
       response.status() >= 400
     ) {
       continue;
     }
 
-    await postPage.waitForTimeout(1200);
-
-    const scripts = await postPage
-      .locator('script')
-      .allTextContents();
-
-    const item =
-      findPhotoItemFromScripts(scripts);
-
-    if (!item) {
-      continue;
-    }
-
-    const trend = normalizeItem(
-      item,
-      url,
-      query
+    await page.waitForTimeout(
+      1800
     );
 
-    if (!trend) {
+    const bodyText =
+      (
+        await page
+          .locator("body")
+          .innerText()
+          .catch(() => "")
+      ).toLowerCase();
+
+    if (
+      /captcha|verify to continue|unusual traffic|too many attempts/.test(
+        bodyText
+      )
+    ) {
+      blockedCount += 1;
+
+      console.log(
+        "  TikTok challenge detected"
+      );
+
       continue;
     }
 
+    /*
+     * На TikTok данные поста обычно лежат
+     * внутри JSON script-тегов.
+     */
+    const scripts =
+      await page
+        .locator("script")
+        .allTextContents()
+        .catch(() => []);
+
+    console.log(
+      `  script tags: ${scripts.length}`
+    );
+
+    const item =
+      findPhotoItemFromScripts(
+        scripts
+      );
+
+    if (!item) {
+      noJsonCount += 1;
+
+      console.log(
+        "  photo JSON not found"
+      );
+
+      continue;
+    }
+
+    const trend =
+      normalizeItem(
+        item,
+        url,
+        query
+      );
+
+    if (!trend) {
+      console.log(
+        "  invalid photo item"
+      );
+
+      continue;
+    }
+
+    console.log(
+      `  age=${trend.ageHours.toFixed(
+        2
+      )}h`
+    );
+
+    console.log(
+      `  images=${trend.imageCount}`
+    );
+
+    console.log(
+      `  views=${formatCompact(
+        trend.views
+      )}`
+    );
+
+    /*
+     * Только последние N часов
+     */
     if (
       trend.ageHours < 0 ||
       trend.ageHours > hours
     ) {
+      expiredCount += 1;
+
+      console.log(
+        "  skip: too old"
+      );
+
       continue;
     }
 
+    /*
+     * Нам нужны именно мемы
+     * с ОДНОЙ картинкой.
+     */
     if (
       trend.imageCount !== 1
     ) {
+      multiImageCount += 1;
+
+      console.log(
+        `  skip: imageCount=${trend.imageCount}`
+      );
+
       continue;
     }
 
-    trends.push(trend);
+    trends.push(
+      trend
+    );
 
     console.log(
-      `  + ${trend.viralScore}/100 | ` +
-        `${formatCompact(trend.views)} | ` +
-        `${trend.ageHours.toFixed(1)}h | ` +
-        `${url}`
+      `  ✅ ACCEPTED`
+    );
+
+    console.log(
+      `  Viral Score: ${trend.viralScore}/100`
+    );
+
+    console.log(
+      `  Views: ${formatCompact(
+        trend.views
+      )}`
+    );
+
+    console.log(
+      `  Views/hour: ${formatCompact(
+        trend.viewsPerHour
+      )}`
     );
   } catch (error) {
     console.log(
       `  post error: ${error.message}`
     );
   }
+
+  /*
+   * Небольшая пауза.
+   */
+  await sleep(900);
 }
+
+/*
+ * =========================================================
+ * 3. ДИАГНОСТИКА
+ * =========================================================
+ */
 
 if (!trends.length) {
   try {
-    const artifactDir = path.join(
-      __dirname,
-      '..',
-      'artifacts'
-    );
+    const artifactDir =
+      path.join(
+        __dirname,
+        "..",
+        "artifacts"
+      );
 
     await fs.mkdir(
       artifactDir,
@@ -361,80 +493,166 @@ if (!trends.length) {
       }
     );
 
-    await discoveryPage.screenshot({
+    /*
+     * Сохраняем скрин последней
+     * страницы TikTok.
+     */
+    await page.screenshot({
       path: path.join(
         artifactDir,
-        'last-page.png'
+        "last-page.png"
       ),
-      fullPage: true,
-    });
 
-    const debugText = await discoveryPage
-      .locator('body')
-      .innerText()
-      .catch(() => '');
+      fullPage: true,
+    }).catch(() => {});
+
+    const debugText =
+      await page
+        .locator("body")
+        .innerText()
+        .catch(() => "");
 
     await fs.writeFile(
       path.join(
         artifactDir,
-        'last-page.txt'
+        "last-page.txt"
       ),
-      debugText.slice(0, 200000),
-      'utf8'
+
+      debugText.slice(
+        0,
+        200000
+      ),
+
+      "utf8"
     );
 
     await fs.writeFile(
       path.join(
         artifactDir,
-        'discovery.json'
+        "discovery.json"
       ),
+
       JSON.stringify(
         {
-          creativeTopics,
+          scannedAt:
+            new Date().toISOString(),
+
           queries,
 
-          foundLinks: [
+          bingRequests,
+
+          discovered:
+            foundLinks.size,
+
+          discoveredUrls: [
             ...foundLinks.keys(),
           ],
 
-          directItems: [
-            ...directItems.keys(),
-          ],
+          inspected,
 
-          pagesVisited,
+          accepted:
+            trends.length,
+
           blockedCount,
+
+          noJsonCount,
+
+          expiredCount,
+
+          multiImageCount,
+
+          lastVisitedUrl,
         },
+
         null,
         2
       ),
-      'utf8'
+
+      "utf8"
     );
 
+    console.log("");
     console.log(
-      'Saved zero-result diagnostics to artifacts/'
+      "Saved diagnostics to artifacts/"
     );
   } catch (error) {
     console.log(
-      `Could not save diagnostics: ${error.message}`
+      `Diagnostics error: ${error.message}`
     );
   }
 }
 
 await browser.close();
 
+/*
+ * =========================================================
+ * 4. СОРТИРУЕМ ПО VIRAL SCORE
+ * =========================================================
+ */
+
 const unique =
-  dedupeTrends(trends);
+  dedupeTrends(
+    trends
+  );
 
 unique.sort(
   (a, b) =>
     b.viralScore -
       a.viralScore ||
     b.viewsPerHour -
-      a.viewsPerHour
+      a.viewsPerHour ||
+    b.views -
+      a.views
 );
 
 const top =
-  unique.slice(0, 40);
+  unique.slice(
+    0,
+    40
+  );
+
+console.log("");
+console.log(
+  "================================"
+);
+
+console.log(
+  `Discovered: ${foundLinks.size}`
+);
+
+console.log(
+  `Inspected: ${inspected}`
+);
+
+console.log(
+  `Accepted: ${top.length}`
+);
+
+console.log(
+  `Too old: ${expiredCount}`
+);
+
+console.log(
+  `Multi-image: ${multiImageCount}`
+);
+
+console.log(
+  `No TikTok JSON: ${noJsonCount}`
+);
+
+console.log(
+  `Challenge signals: ${blockedCount}`
+);
+
+console.log(
+  "================================"
+);
+
+/*
+ * =========================================================
+ * 5. ОТПРАВЛЯЕМ РЕЗУЛЬТАТ В CLOUDFLARE
+ * =========================================================
+ */
 
 const payload = {
   scannedAt:
@@ -443,42 +661,52 @@ const payload = {
   hours,
 
   candidates:
-    foundLinks.size +
-    directItems.size,
+    foundLinks.size,
 
   queries,
 
-  trends: top,
+  trends:
+    top,
 
-  note: top.length
-    ? `Found ${top.length} eligible one-photo posts. ` +
-      `discoveryLinks=${foundLinks.size}, ` +
-      `directItems=${directItems.size}, ` +
-      `blockedSignals=${blockedCount}`
-    : `No eligible one-photo posts found. ` +
-      `discoveryLinks=${foundLinks.size}, ` +
-      `directItems=${directItems.size}, ` +
-      `blockedSignals=${blockedCount}, ` +
-      `creativeTopics=${creativeTopics.length}. ` +
-      `TikTok may be withholding public post data from the GitHub runner.`,
+  note:
+    top.length
+      ? (
+          `Found ${top.length} eligible one-photo posts. ` +
+          `discovered=${foundLinks.size}, ` +
+          `inspected=${inspected}, ` +
+          `blocked=${blockedCount}`
+        )
+      : (
+          `No eligible posts. ` +
+          `Bing discovered=${foundLinks.size}, ` +
+          `inspected=${inspected}, ` +
+          `noJson=${noJsonCount}, ` +
+          `expired=${expiredCount}, ` +
+          `multiImage=${multiImageCount}, ` +
+          `blocked=${blockedCount}`
+        ),
 };
 
 const upload =
-  await fetch(ingestUrl, {
-    method: 'POST',
+  await fetch(
+    ingestUrl,
+    {
+      method: "POST",
 
-    headers: {
-      authorization:
-        `Bearer ${ingestKey}`,
+      headers: {
+        authorization:
+          `Bearer ${ingestKey}`,
 
-      'content-type':
-        'application/json',
-    },
+        "content-type":
+          "application/json",
+      },
 
-    body: JSON.stringify(
-      payload
-    ),
-  });
+      body:
+        JSON.stringify(
+          payload
+        ),
+    }
+  );
 
 const resultText =
   await upload.text();
@@ -493,259 +721,401 @@ console.log(
   `Ingest OK: ${resultText}`
 );
 
-async function loadCreativeCenterTopics(
-  page
+/*
+ * =========================================================
+ * BING RSS
+ * =========================================================
+ */
+
+async function searchBingRss(
+  query
 ) {
-  const targets = [
-    'https://ads.tiktok.com/creative/creativeCenter/trends?region=US&period=7',
+  const url =
+    new URL(
+      "https://www.bing.com/search"
+    );
 
-    'https://ads.tiktok.com/creative/creativeCenter/trends?region=GB&period=7',
-  ];
+  url.searchParams.set(
+    "q",
+    query
+  );
 
-  const topics =
+  url.searchParams.set(
+    "format",
+    "rss"
+  );
+
+  url.searchParams.set(
+    "count",
+    "50"
+  );
+
+  url.searchParams.set(
+    "setlang",
+    "en-US"
+  );
+
+  const response =
+    await fetch(
+      url,
+      {
+        headers: {
+          "user-agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/154 Safari/537.36",
+
+          accept:
+            "application/rss+xml, application/xml, text/xml;q=0.9,*/*;q=0.8",
+        },
+      }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Bing HTTP ${response.status}`
+    );
+  }
+
+  const xml =
+    await response.text();
+
+  /*
+   * Сохраняем все TikTok photo URLs,
+   * которые встречаются в RSS.
+   */
+  const links =
     new Set();
 
-  for (const target of targets) {
-    try {
-      console.log(
-        `Creative Center: ${target}`
+  const items =
+    [
+      ...xml.matchAll(
+        /<item>([\s\S]*?)<\/item>/gi
+      ),
+    ];
+
+  for (const item of items) {
+    const content =
+      item[1] || "";
+
+    /*
+     * Берём link.
+     */
+    const rssLink =
+      extractXmlTag(
+        content,
+        "link"
       );
 
-      const response =
-        await page.goto(
-          target,
-          {
-            waitUntil:
-              'domcontentloaded',
-
-            timeout: 35_000,
-          }
-        );
-
-      if (
-        !response ||
-        response.status() >= 400
-      ) {
-        continue;
-      }
-
-      await page.waitForTimeout(
-        3500
-      );
-
-      for (let i = 0; i < 3; i++) {
-        await page.mouse.wheel(
-          0,
-          1800
-        );
-
-        await page.waitForTimeout(
-          600
-        );
-      }
-
-      const text =
-        await page
-          .locator('body')
-          .innerText()
-          .catch(() => '');
-
+    if (rssLink) {
       for (
-        const match of text.matchAll(
-          /#([\p{L}\p{N}_]{2,50})/gu
+        const found of extractTikTokPhotoUrls(
+          rssLink
         )
       ) {
-        topics.add(
-          `#${match[1]}`
+        links.add(
+          found
         );
-
-        if (
-          topics.size >= 15
-        ) {
-          break;
-        }
       }
+    }
 
-      if (
-        topics.size >= 15
-      ) {
-        break;
-      }
-    } catch (error) {
-      console.log(
-        `  Creative Center error: ${error.message}`
+    /*
+     * Иногда URL может попасть
+     * в description/title.
+     */
+    const description =
+      extractXmlTag(
+        content,
+        "description"
+      );
+
+    for (
+      const found of extractTikTokPhotoUrls(
+        description
+      )
+    ) {
+      links.add(
+        found
+      );
+    }
+
+    const title =
+      extractXmlTag(
+        content,
+        "title"
+      );
+
+    for (
+      const found of extractTikTokPhotoUrls(
+        title
+      )
+    ) {
+      links.add(
+        found
       );
     }
   }
 
-  const list = [
-    ...topics,
-  ].slice(0, 15);
+  /*
+   * Дополнительно ищем URL
+   * прямо во всём XML.
+   */
+  for (
+    const found of extractTikTokPhotoUrls(
+      xml
+    )
+  ) {
+    links.add(
+      found
+    );
+  }
 
-  console.log(
-    `Creative Center topics: ${list.length}` +
-      `${
-        list.length
-          ? ` -> ${list.join(', ')}`
-          : ''
-      }`
-  );
-
-  return list;
+  return [
+    ...links,
+  ];
 }
 
-function extractPhotoLinksFromScripts(
-  scripts
+function extractXmlTag(
+  xml,
+  tag
 ) {
-  const out =
+  const regex =
+    new RegExp(
+      `<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`,
+      "i"
+    );
+
+  const match =
+    xml.match(
+      regex
+    );
+
+  return match
+    ? decodeXml(
+        match[1]
+      )
+    : "";
+}
+
+function decodeXml(
+  value
+) {
+  return String(
+    value || ""
+  )
+    .replaceAll(
+      "<![CDATA[",
+      ""
+    )
+    .replaceAll(
+      "]]>",
+      ""
+    )
+    .replaceAll(
+      "&amp;",
+      "&"
+    )
+    .replaceAll(
+      "&quot;",
+      '"'
+    )
+    .replaceAll(
+      "&#39;",
+      "'"
+    )
+    .replaceAll(
+      "&lt;",
+      "<"
+    )
+    .replaceAll(
+      "&gt;",
+      ">"
+    );
+}
+
+function extractTikTokPhotoUrls(
+  input
+) {
+  const result =
     new Set();
 
-  const patterns = [
-    /https?:\\?\/?\\?\/www\.tiktok\.com\\?\/@[^"'\\\s<>]+\\?\/photo\\?\/\d+/gi,
+  let text =
+    decodeXml(
+      input
+    );
 
-    /\/(@[^"'\\\s<>]+)\/photo\/(\d+)/gi,
-  ];
+  /*
+   * Иногда URL закодирован
+   * через %2F / %3A.
+   */
+  for (
+    let i = 0;
+    i < 2;
+    i++
+  ) {
+    try {
+      const decoded =
+        decodeURIComponent(
+          text
+        );
 
-  for (const raw of scripts) {
-    const text = String(
-      raw || ''
-    )
+      if (
+        decoded === text
+      ) {
+        break;
+      }
+
+      text =
+        decoded;
+    } catch {
+      break;
+    }
+  }
+
+  text =
+    text
       .replaceAll(
-        '\\u002F',
-        '/'
+        "\\/",
+        "/"
       )
       .replaceAll(
-        '\\/',
-        '/'
+        "\\u002F",
+        "/"
       )
       .replaceAll(
-        '\\u003A',
-        ':'
+        "\\u003A",
+        ":"
       );
 
-    for (
-      const pattern of patterns
-    ) {
-      for (
-        const match of text.matchAll(
-          pattern
-        )
-      ) {
-        let value =
-          match[0];
+  const regex =
+    /https?:\/\/(?:www\.)?tiktok\.com\/@[^\/\s"'<>?&]+\/photo\/\d+/gi;
 
-        if (
-          value.startsWith(
-            '/@'
-          )
-        ) {
-          value =
-            `https://www.tiktok.com${value}`;
-        }
+  for (
+    const match of text.matchAll(
+      regex
+    )
+  ) {
+    const clean =
+      canonicalTikTokUrl(
+        match[0]
+      );
 
-        value =
-          value.replaceAll(
-            '\\',
-            ''
-          );
-
-        const clean =
-          canonicalTikTokUrl(
-            value
-          );
-
-        if (clean) {
-          out.add(clean);
-        }
-      }
+    if (clean) {
+      result.add(
+        clean
+      );
     }
   }
 
   return [
-    ...out,
+    ...result,
   ];
+}
+
+/*
+ * =========================================================
+ * TIKTOK JSON
+ * =========================================================
+ */
+
+function findPhotoItemFromScripts(
+  scripts
+) {
+  const items =
+    extractPhotoItemsFromScripts(
+      scripts
+    );
+
+  return (
+    items[0] ||
+    null
+  );
 }
 
 function extractPhotoItemsFromScripts(
   scripts
 ) {
   const out = [];
+
   const seen =
     new Set();
 
-  for (const text of scripts) {
-    const t = String(
-      text || ''
-    ).trim();
+  for (
+    const raw of scripts
+  ) {
+    const text =
+      String(
+        raw || ""
+      ).trim();
 
+    if (!text) {
+      continue;
+    }
+
+    /*
+     * Сначала интересуют скрипты,
+     * в которых вообще встречается imagePost.
+     */
     if (
-      !t ||
-      (
-        t[0] !== '{' &&
-        t[0] !== '['
+      !text.includes(
+        "imagePost"
       )
     ) {
       continue;
     }
 
+    /*
+     * Большинство TikTok state scripts
+     * являются чистым JSON.
+     */
     if (
-      !t.includes(
-        'imagePost'
-      )
+      text[0] === "{" ||
+      text[0] === "["
     ) {
-      continue;
-    }
+      try {
+        const parsed =
+          JSON.parse(
+            text
+          );
 
-    let parsed;
+        for (
+          const item of walkForItems(
+            parsed,
+            100
+          )
+        ) {
+          const id =
+            String(
+              item.id ||
+              item.itemId ||
+              ""
+            );
 
-    try {
-      parsed =
-        JSON.parse(t);
-    } catch {
-      continue;
-    }
+          if (
+            !id ||
+            seen.has(id)
+          ) {
+            continue;
+          }
 
-    for (
-      const item of walkForItems(
-        parsed,
-        60
-      )
-    ) {
-      const id = String(
-        item.id ||
-          item.itemId ||
-          ''
-      );
+          seen.add(id);
 
-      if (
-        !id ||
-        seen.has(id)
-      ) {
-        continue;
+          out.push(
+            item
+          );
+        }
+      } catch {
+        // это не чистый JSON
       }
-
-      seen.add(id);
-
-      out.push(item);
     }
   }
 
   return out;
 }
 
-function findPhotoItemFromScripts(
-  scripts
-) {
-  return (
-    extractPhotoItemsFromScripts(
-      scripts
-    )[0] || null
-  );
-}
-
 function walkForItems(
   root,
-  limit = 50
+  limit = 100
 ) {
   const stack = [
     root,
@@ -757,7 +1127,7 @@ function walkForItems(
 
   while (
     stack.length &&
-    visited < 250_000 &&
+    visited < 300000 &&
     found.length < limit
   ) {
     const node =
@@ -768,7 +1138,7 @@ function walkForItems(
     if (
       !node ||
       typeof node !==
-        'object'
+        "object"
     ) {
       continue;
     }
@@ -792,12 +1162,17 @@ function walkForItems(
       ) &&
       node.createTime
     ) {
-      found.push(node);
+      found.push(
+        node
+      );
+
       continue;
     }
 
     if (
-      Array.isArray(node)
+      Array.isArray(
+        node
+      )
     ) {
       for (
         let i =
@@ -808,7 +1183,7 @@ function walkForItems(
         if (
           node[i] &&
           typeof node[i] ===
-            'object'
+            "object"
         ) {
           stack.push(
             node[i]
@@ -824,9 +1199,11 @@ function walkForItems(
         if (
           value &&
           typeof value ===
-            'object'
+            "object"
         ) {
-          stack.push(value);
+          stack.push(
+            value
+          );
         }
       }
     }
@@ -834,6 +1211,12 @@ function walkForItems(
 
   return found;
 }
+
+/*
+ * =========================================================
+ * NORMALIZATION
+ * =========================================================
+ */
 
 function normalizeItem(
   item,
@@ -846,18 +1229,14 @@ function normalizeItem(
     {};
 
   const images =
-    item.imagePost?.images ||
+    item.imagePost
+      ?.images ||
     [];
-
-  if (
-    images.length !== 1
-  ) {
-    return null;
-  }
 
   const createSeconds =
     Number(
-      item.createTime || 0
+      item.createTime ||
+      0
     );
 
   if (
@@ -871,7 +1250,8 @@ function normalizeItem(
 
   const createdAt =
     new Date(
-      createSeconds * 1000
+      createSeconds *
+      1000
     );
 
   const ageHours =
@@ -884,7 +1264,7 @@ function normalizeItem(
   const views =
     num(
       stats.playCount ??
-        stats.playCountV2
+      stats.playCountV2
     );
 
   const likes =
@@ -915,12 +1295,14 @@ function normalizeItem(
           likes +
           comments +
           shares
-        ) / views
+        ) /
+        views
       : 0;
 
   const shareRate =
     views > 0
-      ? shares / views
+      ? shares /
+        views
       : 0;
 
   const viralScore =
@@ -935,8 +1317,8 @@ function normalizeItem(
   const caption =
     String(
       item.desc ||
-        item.title ||
-        ''
+      item.title ||
+      ""
     ).trim();
 
   const hashtags =
@@ -952,33 +1334,35 @@ function normalizeItem(
 
   const author =
     typeof item.author ===
-    'object'
+      "object"
       ? (
-          item.author.uniqueId ||
-          item.author.nickname ||
-          ''
+          item.author
+            .uniqueId ||
+          item.author
+            .nickname ||
+          ""
         )
       : (
           item.author ||
           item.authorId ||
-          ''
+          ""
         );
 
   return {
-    id: String(
-      item.id ||
-        item.itemId
-    ),
+    id:
+      String(
+        item.id ||
+        item.itemId ||
+        ""
+      ),
 
-    url:
-      url ||
-      itemUrl(item),
+    url,
 
     query,
 
     author:
       String(
-        author || ''
+        author || ""
       ),
 
     caption,
@@ -991,8 +1375,11 @@ function normalizeItem(
       images.length,
 
     views,
+
     likes,
+
     comments,
+
     shares,
 
     createdAt:
@@ -1025,43 +1412,12 @@ function normalizeItem(
   };
 }
 
-function itemUrl(item) {
-  const id = String(
-    item?.id ||
-      item?.itemId ||
-      ''
-  );
-
-  const author =
-    typeof item?.author ===
-    'object'
-      ? (
-          item.author.uniqueId ||
-          ''
-        )
-      : String(
-          item?.author ||
-            ''
-        );
-
-  if (
-    !id ||
-    !author
-  ) {
-    return '';
-  }
-
-  return (
-    `https://www.tiktok.com/` +
-    `@${author}/photo/${id}`
-  );
-}
-
 function firstImageUrl(
   image
 ) {
   const possible = [
-    image?.imageURL?.urlList,
+    image?.imageURL
+      ?.urlList,
 
     image?.displayImage
       ?.urlList,
@@ -1079,14 +1435,16 @@ function firstImageUrl(
     const list of possible
   ) {
     if (
-      Array.isArray(list) &&
+      Array.isArray(
+        list
+      ) &&
       list[0]
     ) {
       return list[0];
     }
   }
 
-  return '';
+  return "";
 }
 
 function extractHashtags(
@@ -1107,18 +1465,21 @@ function extractHashtags(
   }
 
   for (
-    const c of item.challenges ||
-    []
+    const challenge of
+      item.challenges ||
+      []
   ) {
     const title =
-      c?.title ||
-      c?.chaName;
+      challenge?.title ||
+      challenge?.chaName;
 
     if (title) {
       set.add(
-        String(title).replace(
+        String(
+          title
+        ).replace(
           /^#/,
-          ''
+          ""
         )
       );
     }
@@ -1126,8 +1487,17 @@ function extractHashtags(
 
   return [
     ...set,
-  ].slice(0, 15);
+  ].slice(
+    0,
+    15
+  );
 }
+
+/*
+ * =========================================================
+ * VIRAL SCORE
+ * =========================================================
+ */
 
 function scoreViral({
   views,
@@ -1139,51 +1509,67 @@ function scoreViral({
   const raw =
     12 *
       Math.log10(
-        viewsPerHour + 1
+        viewsPerHour +
+        1
       ) +
+
     6 *
       Math.log10(
-        views + 1
+        views +
+        1
       ) +
+
     Math.min(
       25,
       engagementRate *
         120
     ) +
+
     Math.min(
       15,
-      shareRate * 600
+      shareRate *
+        600
     ) +
+
     Math.max(
       0,
       6 -
-        ageHours / 4
+        ageHours /
+          4
     ) -
+
     45;
 
   return clamp(
-    Math.round(raw),
+    Math.round(
+      raw
+    ),
     0,
     100
   );
 }
+
+/*
+ * =========================================================
+ * HELPERS
+ * =========================================================
+ */
 
 function canonicalTikTokUrl(
   value
 ) {
   try {
     const url =
-      new URL(value);
+      new URL(
+        value
+      );
 
     if (
       !url.hostname.endsWith(
-        'tiktok.com'
-      ) ||
-      !url.pathname.includes(
-        '/photo/'
+        "tiktok.com"
       )
     ) {
-      return '';
+      return "";
     }
 
     const match =
@@ -1192,7 +1578,7 @@ function canonicalTikTokUrl(
       );
 
     if (!match) {
-      return '';
+      return "";
     }
 
     return (
@@ -1200,7 +1586,7 @@ function canonicalTikTokUrl(
       `@${match[1]}/photo/${match[2]}`
     );
   } catch {
-    return '';
+    return "";
   }
 }
 
@@ -1222,16 +1608,20 @@ function dedupeTrends(
     }
 
     const old =
-      map.get(key);
+      map.get(
+        key
+      );
 
     if (
       !old ||
       Number(
-        item.views || 0
+        item.views ||
+        0
       ) >
-        Number(
-          old.views || 0
-        )
+      Number(
+        old.views ||
+        0
+      )
     ) {
       map.set(
         key,
@@ -1245,13 +1635,18 @@ function dedupeTrends(
   ];
 }
 
-function num(value) {
+function num(
+  value
+) {
   const n =
     Number(
-      value || 0
+      value ||
+      0
     );
 
-  return Number.isFinite(n)
+  return Number.isFinite(
+    n
+  )
     ? n
     : 0;
 }
@@ -1261,12 +1656,15 @@ function round(
   digits
 ) {
   const p =
-    10 ** digits;
+    10 **
+    digits;
 
   return (
     Math.round(
-      n * p
-    ) / p
+      n *
+      p
+    ) /
+    p
   );
 }
 
@@ -1288,15 +1686,28 @@ function formatCompact(
   n
 ) {
   return new Intl.NumberFormat(
-    'en',
+    "en",
     {
       notation:
-        'compact',
+        "compact",
 
       maximumFractionDigits:
         1,
     }
   ).format(
-    n || 0
+    n ||
+    0
+  );
+}
+
+function sleep(
+  ms
+) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        ms
+      )
   );
 }
